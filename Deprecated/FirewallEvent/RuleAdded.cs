@@ -4,10 +4,11 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace WindowsAdvancedFirewallApi.Events.Objects
+namespace WindowsFirewallLibrary.FirewallEvent
 {
-	public abstract class FirewallBaseObject
+	[Serializable]
+	public class RuleAdded : ARule
 	{
-		
+		// EventID: 2004
 	}
 }

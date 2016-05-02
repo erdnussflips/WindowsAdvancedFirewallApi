@@ -2,13 +2,17 @@
 using NLog;
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Linq;
 using System.Security.Permissions;
 using System.Text;
 using System.Threading.Tasks;
+using System.Windows.Data;
+using System.Windows.Threading;
 using WindowsAdvancedFirewallApi.Events.Arguments;
 using WindowsAdvancedFirewallApi.Events.Objects;
+using WindowsAdvancedFirewallApi.Library;
 
 namespace WindowsAdvancedFirewallApi.Events
 {
@@ -39,10 +43,26 @@ namespace WindowsAdvancedFirewallApi.Events
 
 		private EventLog _eventLog { get; set; }
 
-		#region EventHander
+		private object _historySyncLock = new object();
+		private ICollection<FirewallBaseEventArgs> _history;
+		public ICollection<FirewallBaseEventArgs> History
+		{
+			get
+			{
+				if (_history == null)
+				{
+					_history = new ObservableCollection<FirewallBaseEventArgs>();
+					BindingOperations.EnableCollectionSynchronization(_history, _historySyncLock);
+				}
 
-		public event EventHandler HistoryLoadingStatusChanged;
-		public event EventHandler<List<FirewallBaseEventArgs>> HistoryLoaded;
+				return _history;
+			}
+		}
+
+		#region EventHandler
+
+		public event EventHandler<FirewallHistoryLoadingStatusChangedEventArgs> HistoryLoadingStatusChanged;
+		public event EventHandler<ICollection<FirewallBaseEventArgs>> HistoryLoaded;
 
 		public event EventHandler<FirewallBaseEventArgs> DefaultsRestored;
 		public event EventHandler<FirewallSettingEventArgs> SettingsChanged;
@@ -63,8 +83,7 @@ namespace WindowsAdvancedFirewallApi.Events
 		private FirewallEventManager()
 		{
 		}
-
-
+		
 		public bool IsInstalled()
 		{
 			ApiHelper.RaiseExceptionOnUnauthorizedAccess("to check installation status.", true);
@@ -97,7 +116,7 @@ namespace WindowsAdvancedFirewallApi.Events
 			}
 		}
 
-		//[PrincipalPermission(SecurityAction.Demand, Role = @"BUILTIN\Administrators")]
+		// [PrincipalPermission(SecurityAction.Demand, Role = @"BUILTIN\Administrators")]
 		public void Install()
 		{
 			ApiHelper.RaiseExceptionOnUnauthorizedAccess("to install the event logger.", true);
@@ -112,7 +131,7 @@ namespace WindowsAdvancedFirewallApi.Events
 			//	EventLog.CreateEventSource(FIREWALL_EVENT_SOURCE, FIREWALL_EVENT_LOGNAME);
 			//}
 		}
-
+		
 		public void Deinstall()
 		{
 			ApiHelper.RaiseExceptionOnUnauthorizedAccess("to deinstall the event logger.", true);
@@ -133,10 +152,7 @@ namespace WindowsAdvancedFirewallApi.Events
 		{
 			try
 			{
-				var temp = new EventLog(ApiConstants.FIREWALL_EVENT_LOGNAME)
-				{
-					EnableRaisingEvents = true
-				};
+				var temp = new EventLog(ApiConstants.FIREWALL_EVENT_LOGNAME);
 				temp.Close();
 				temp.Dispose();
 
@@ -174,6 +190,7 @@ namespace WindowsAdvancedFirewallApi.Events
 			{
 				_eventLog.Close();
 				_eventLog.Dispose();
+				_eventLog = null;
 
 				return true;
 			}
@@ -204,7 +221,7 @@ namespace WindowsAdvancedFirewallApi.Events
 			InvokeEventHandler(UserNotificationFailedForBlockedOperation, e);
 		}
 
-		private void InvokeEventHandler<TData>(EventHandler<TData> handler, FirewallBaseEventArgs e) where TData : FirewallBaseEventArgs
+		private void InvokeEventHandler<TData>(EventHandler<TData> handler, EventArgs e) where TData : EventArgs
 		{
 			if (e is TData)
 			{
@@ -216,29 +233,37 @@ namespace WindowsAdvancedFirewallApi.Events
 		{
 			Task.Run(() =>
 			{
-				var events = new List<FirewallBaseEventArgs>();
-				var index = 1;
+				lock(_historySyncLock)
+				{
+					History.Clear();
+				}
+
+				var currentNumber = 1;
 
 				foreach (EventLogEntry item in _eventLog.Entries)
 				{
 					var @event = FirewallEventFactory.GenerateFirewallEventArgs(item);
 					if (@event != null)
 					{
-						events.Add(@event);
+						lock (_historySyncLock)
+						{
+							History.Add(@event);
+						}
 
-						var loadedEvent = new FirewallHistoryLoadingStatusChangedEventArgs()
+						var loadedEvent = new FirewallHistoryLoadingStatusChangedEventArgs
 						{
 							MaxCount = _eventLog.Entries.Count,
-							LoadedCount = index,
+							LoadedCount = currentNumber,
 							CurrentLoadedEvent = @event
 						};
-						HistoryLoadingStatusChanged.Invoke(this, null);
+
+						InvokeEventHandler(HistoryLoadingStatusChanged, loadedEvent);
 					}
 
-					index++;
+					currentNumber++;
 				}
 
-				HistoryLoaded.Invoke(this, events);
+				HistoryLoaded?.Invoke(this, History);
 			});
 		}
 
